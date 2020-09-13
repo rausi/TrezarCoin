@@ -121,7 +121,7 @@ CAmount AmountFromValue(const UniValue& value, int decimal)
 {
     if (!value.isNum() && !value.isStr())
         throw JSONRPCError(RPC_TYPE_ERROR, "Amount is not a number or string");
-    CAmount amount = roundint64(amount * COIN);
+    CAmount amount;
     if (!ParseFixedPoint(value.getValStr(), decimal, &amount))
         throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
     if (!MoneyRange(amount))
@@ -372,7 +372,7 @@ void JSONRequest::parse(const UniValue& valRequest)
     if (!valMethod.isStr())
         throw JSONRPCError(RPC_INVALID_REQUEST, "Method must be a string");
     strMethod = valMethod.get_str();
-    if (strMethod != "getblocktemplate")
+    if (strMethod != "getwork" && strMethod != "getblocktemplate")
         LogPrint("rpc", "ThreadRPCServer method=%s\n", SanitizeString(strMethod));
 
     // Parse params

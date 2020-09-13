@@ -300,6 +300,108 @@ bool SecMsgDB::TxnAbort()
     return true;
 }
 
+bool SecMsgDB::ReadAlias(CKeyID& addr, std::string& alias)
+{
+    if (!pdb)
+        return false;
+
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey.reserve(sizeof(addr) + 2);
+    ssKey << 'a';
+    ssKey << 'l';
+    ssKey << addr;
+    std::string strValue;
+
+    bool readFromDb = true;
+    if (activeBatch)
+    {
+        // -- check activeBatch first
+        bool deleted = false;
+        readFromDb = ScanBatch(ssKey, &strValue, &deleted) == false;
+        if (deleted)
+            return false;
+    }
+
+    if (readFromDb)
+    {
+        leveldb::Status s = pdb->Get(leveldb::ReadOptions(), ssKey.str(), &strValue);
+        if (!s.ok())
+        {
+            if (s.IsNotFound())
+                return false;
+            LogPrintf("LevelDB read failure: %s\n", s.ToString().c_str());
+            return false;
+        }
+    }
+
+    try {
+        CDataStream ssValue(strValue.data(), strValue.data() + strValue.size(), SER_DISK, CLIENT_VERSION);
+        ssValue >> alias;
+    } catch (std::exception& e) {
+        LogPrintf("SecMsgDB::ReadAlias() unserialize threw: %s.\n", e.what());
+        return false;
+    }
+
+    return true;
+}
+
+bool SecMsgDB::WriteAlias(CKeyID& addr, std::string& alias)
+{
+    if (!pdb)
+        return false;
+
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey.reserve(sizeof(addr) + 2);
+    ssKey << 'a';
+    ssKey << 'l';
+    ssKey << addr;
+    CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+    ssValue.reserve(sizeof(alias));
+    ssValue << alias;
+
+    if (activeBatch)
+    {
+        activeBatch->Put(ssKey.str(), ssValue.str());
+        return true;
+    }
+
+    leveldb::WriteOptions writeOptions;
+    writeOptions.sync = true;
+    leveldb::Status s = pdb->Put(writeOptions, ssKey.str(), ssValue.str());
+    if (!s.ok())
+    {
+        LogPrintf("SecMsgDB write failure: %s\n", s.ToString().c_str());
+        return false;
+    }
+
+    return true;
+}
+
+bool SecMsgDB::ExistsAlias(CKeyID& addr)
+{
+    if (!pdb)
+        return false;
+
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey.reserve(sizeof(addr)+2);
+    ssKey << 'a';
+    ssKey << 'l';
+    ssKey << addr;
+    std::string unused;
+
+    if (activeBatch)
+    {
+        bool deleted;
+        if (ScanBatch(ssKey, &unused, &deleted) && !deleted)
+        {
+            return true;
+        }
+    }
+
+    leveldb::Status s = pdb->Get(leveldb::ReadOptions(), ssKey.str(), &unused);
+    return s.IsNotFound() == false;
+}
+
 bool SecMsgDB::ReadPK(CKeyID& addr, CPubKey& pubkey)
 {
     if (!pdb)
@@ -400,6 +502,41 @@ bool SecMsgDB::ExistsPK(CKeyID& addr)
 
     leveldb::Status s = pdb->Get(leveldb::ReadOptions(), ssKey.str(), &unused);
     return s.IsNotFound() == false;
+}
+
+
+bool SecMsgDB::NextAlias(leveldb::Iterator* it, std::string& prefix, std::string& aliasKey, std::string& alias)
+{
+    if (!pdb)
+        return false;
+
+    if (!it->Valid()) // first run
+        it->Seek(prefix);
+    else
+        it->Next();
+
+    if (!(it->Valid() && it->key().size() == 22 && memcmp(it->key().data(), prefix.data(), 2) == 0))
+        return false;
+
+    CKeyID key;
+    memcpy(&key, it->key().data() + 2, 20);
+
+    CBitcoinAddress address(key);
+    if (!address.IsValid()) {
+        return false;
+    } else {
+        aliasKey = address.ToString();
+    }
+
+    try {
+        CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+        ssValue >> alias;
+    } catch (std::exception& e) {
+        LogPrintf("SecMsgDB::NextAlias() unserialize threw: %s.\n", e.what());
+        return false;
+    }
+
+    return true;
 }
 
 
@@ -577,7 +714,7 @@ void ThreadSecureMsg()
         {
             LOCK(cs_smsg);
 
-            for (std::map<int64_t, SecMsgBucket>::iterator it(smsgBuckets.begin()); it != smsgBuckets.end(); it++)
+            for (std::map<int64_t, SecMsgBucket>::iterator it(smsgBuckets.begin()); it != smsgBuckets.end();)
             {
                 if (it->first < cutoffTime)
                 {
@@ -606,7 +743,8 @@ void ThreadSecureMsg()
                         }
                     }
 
-                    smsgBuckets.erase(it);
+                    smsgBuckets.erase(it++);
+                    continue;
                 } else if (it->second.nLockCount > 0) {
                     it->second.nLockCount--;
 
@@ -617,6 +755,7 @@ void ThreadSecureMsg()
                         it->second.nLockPeerId = 0;
                     }
                 }
+                ++it;
             }
         }
 
@@ -910,6 +1049,30 @@ int SecureMsgAddWalletAddresses()
     return 0;
 }
 
+bool SecureMsgAddWalletAddress(std::string address)
+{
+    CBitcoinAddress coinAddress(address);
+    if (!coinAddress.IsValid()) {
+        return false;
+    }
+
+    CTxDestination dest = coinAddress.Get();
+    if (!IsMine(*pwalletMain, dest)) {
+        return false;
+    }
+
+    for (std::vector<SecMsgAddress>::iterator it = smsgAddresses.begin(); it != smsgAddresses.end(); ++it) {
+        if (address != it->sAddress) {
+            continue;
+        }
+        return true; // Already in wallet, mark as success
+    }
+
+    smsgAddresses.push_back(SecMsgAddress(address, 1 /* recvEnabled */, 1 /* recvAnon */));
+
+    return true;
+}
+
 int SecureMsgReadIni()
 {
     if (!fSecMsgEnabled)
@@ -1196,7 +1359,7 @@ bool SecureMsgDisable()
     return true;
 }
 
-bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRecv)
+bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRecv, bool& found)
 {
     /*
         Called from ProcessMessage
@@ -1205,6 +1368,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
     if (strCommand == "smsgInv")
     {
+        found = true;
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
 
@@ -1223,7 +1387,6 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 return false;
         }
 
-        uint32_t nBuckets       = smsgBuckets.size();
         uint32_t nLocked        = 0;    // no. of locked buckets on this node
         uint32_t nInvBuckets;           // no. of bucket headers sent by peer in smsgInv
         memcpy(&nInvBuckets, &vchData[0], 4);
@@ -1308,6 +1471,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgShow") {
+        found = true;
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
 
@@ -1357,6 +1521,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgHave") {
+        found = true;
         // -- peer has these messages in bucket
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
@@ -1427,6 +1592,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgWant") {
+        found = true;
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
 
@@ -1489,12 +1655,14 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgMsg") {
+        found = true;
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
 
         SecureMsgReceive(pfrom, vchData);
 
     } else if (strCommand == "smsgMatch") {
+        found = true;
         std::vector<uint8_t> vchData;
         vRecv >> vchData;
 
@@ -1518,16 +1686,19 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgPing") {
+        found = true;
         // -- smsgPing is the initial message, send reply
         pfrom->PushMessage("smsgPong");
 
     } else if (strCommand == "smsgPong") {
+        found = true;
         {
             LOCK(pfrom->smsgData.cs_smsg_net);
             pfrom->smsgData.fEnabled = true;
         }
 
     } else if (strCommand == "smsgDisabled") {
+        found = true;
         // -- peer has disabled secure messaging.
         {
             LOCK(pfrom->smsgData.cs_smsg_net);
@@ -1535,6 +1706,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         }
 
     } else if (strCommand == "smsgIgnore") {
+        found = true;
         // -- peer is reporting that it will ignore this node until time.
         //    Ignore peer too
         std::vector<uint8_t> vchData;
@@ -1554,8 +1726,6 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             pfrom->smsgData.ignoreUntil = time;
         }
 
-    } else {
-        // Unknown message
     }
 
     return true;
@@ -1682,6 +1852,66 @@ static int SecureMsgInsertAddress(CKeyID& hashKey, CPubKey& pubKey, SecMsgDB& ad
     }
 
     return 0;
+}
+
+bool SecureMsgGetAllAliases(std::map<std::string, std::string>& aliases)
+{
+    LOCK(cs_smsgDB);
+
+    SecMsgDB dbAliases;
+
+    if (!dbAliases.Open("r")) {
+        return false;
+    }
+
+    std::string sPrefix("al");
+    std::string aliasKey;
+    std::string alias;
+
+    MessageData msg;
+    leveldb::Iterator* it = dbAliases.pdb->NewIterator(leveldb::ReadOptions());
+    while (dbAliases.NextAlias(it, sPrefix, aliasKey, alias))
+    {
+        aliases.emplace(aliasKey, alias);
+    }
+    delete it;
+
+    return true;
+}
+
+
+bool SecureMsgInsertAlias(CKeyID& hashKey, std::string& alias)
+{
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB addrpkdb;
+
+        if (!addrpkdb.Open("cr+")) {
+            LogPrintf("addrpkdb.Open failed.\n");
+            return false;
+        }
+
+        if (addrpkdb.ExistsAlias(hashKey))
+        {
+            std::string aliasCheck;
+            if (!addrpkdb.ReadAlias(hashKey, aliasCheck))
+            {
+                LogPrintf("addrpkdb.Read failed.\n");
+            } else {
+                if (aliasCheck == alias) {
+                    // Alias already in DB
+                    return true;
+                }
+            }
+        }
+
+        if (!addrpkdb.WriteAlias(hashKey, alias))
+        {
+            LogPrintf("Write pair failed.\n");
+            return false;
+        }
+    }
+    return true;
 }
 
 int SecureMsgInsertAddress(CKeyID& hashKey, CPubKey& pubKey)
@@ -1816,7 +2046,6 @@ bool SecureMsgScanBlock(CBlock& block)
 bool ScanChainForPublicKeys(CBlockIndex* pindexStart)
 {
     LogPrintf("Scanning block chain for public keys.\n");
-    int64_t nStart = GetTimeMillis();
 
     // -- public keys are in txin.scriptSig
     //    matching addresses are in scriptPubKey of txin's referenced output
@@ -1886,7 +2115,6 @@ bool SecureMsgScanBuckets()
     if (!fSecMsgEnabled || pwalletMain->IsLocked())
         return false;
 
-    int64_t  mStart         = GetTimeMillis();
     int64_t  now            = GetTime();
     uint32_t nFiles         = 0;
     uint32_t nMessages      = 0;
@@ -2805,7 +3033,6 @@ int SecureMsgSetHash(uint8_t *pHeader, uint8_t *pPayload, uint32_t nPayload)
 
     SecureMessage* psmsg = (SecureMessage*) pHeader;
 
-    int64_t nStart = GetTimeMillis();
     uint8_t civ[32];
     uint8_t sha256Hash[32];
 

@@ -210,6 +210,9 @@ private:
 void IncrementExtraNonce(CBlock* pblock, const CBlockIndex* pindexPrev, unsigned int& nExtraNonce);
 int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev);
 
+/** Check mined block */
+bool CheckWork(const CChainParams& chainparams, CBlock* pblock);
+
 /** Sign proof-of-stake block */
 bool SignBlock(CBlock *pblock, CWallet& wallet, CAmount nStakeReward);
  /** Check mined proof-of-stake block */

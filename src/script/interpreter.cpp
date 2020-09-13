@@ -15,8 +15,6 @@
 
 using namespace std;
 
-typedef vector<unsigned char> valtype;
-
 namespace {
 
 inline bool set_success(ScriptError* ret)
@@ -1022,6 +1020,12 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                         else
                             return set_error(serror, SCRIPT_ERR_CHECKMULTISIGVERIFY);
                     }
+                }
+                break;
+
+                case OP_COINSTAKE:
+                {
+                    stack.push_back(checker.IsCoinStake() ? vchTrue : vchFalse);
                 }
                 break;
 

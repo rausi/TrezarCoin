@@ -21,6 +21,7 @@
 #include "transactiontablemodel.h"
 #include "transactionview.h"
 #include "walletmodel.h"
+#include "trezarmessage.h"
 
 #include "ui_interface.h"
 
@@ -71,6 +72,11 @@ WalletView::WalletView(const PlatformStyle *platformStyle, QWidget *parent) :
     addWidget(stakingPage);
     addWidget(settingsPage);
 
+#ifdef ENABLE_SMESSAGE
+    trezarMessagePage = new TrezarMessage(platformStyle);
+    addWidget(trezarMessagePage);
+#endif // ENABLE_SMESSAGE
+
     // Clicking on a transaction on the overview pre-selects the transaction on the transaction history page
     connect(overviewPage, SIGNAL(transactionClicked(QModelIndex)), transactionView, SLOT(focusTransaction(QModelIndex)));
 
@@ -86,10 +92,6 @@ WalletView::WalletView(const PlatformStyle *platformStyle, QWidget *parent) :
     connect(transactionView, SIGNAL(message(QString, QString, unsigned int)), this, SIGNAL(message(QString, QString, unsigned int)));
     //Pass through messages from easySplitPage
     connect(easySplitPage, SIGNAL(message(QString, QString, unsigned int)), this, SIGNAL(message(QString, QString, unsigned int)));
-    // Pass through messages from staking page
-    connect(stakingPage, SIGNAL(message(QString, QString, unsigned int)), this, SIGNAL(message(QString, QString, unsigned int)));
-    // Pass through messages from staking page
-    connect(settingsPage, SIGNAL(message(QString, QString, unsigned int)), this, SIGNAL(message(QString, QString, unsigned int)));
 }
 
 WalletView::~WalletView()
@@ -143,6 +145,9 @@ void WalletView::setWalletModel(WalletModel *walletModel)
     sendCoinsPage->setModel(walletModel);
     easySplitPage->setModel(walletModel);
     stakingPage->setWalletModel(walletModel);
+#ifdef ENABLE_SMESSAGE
+    trezarMessagePage->setWalletModel(walletModel);
+#endif // ENABLE_SMESSAGE
     settingsPage->setModel(clientModel->getOptionsModel());
     usedReceivingAddressesPage->setModel(walletModel->getAddressTableModel());
     usedSendingAddressesPage->setModel(walletModel->getAddressTableModel());
@@ -197,6 +202,13 @@ void WalletView::gotoOverviewPage()
 void WalletView::gotoHistoryPage()
 {
     setCurrentWidget(transactionsPage);
+}
+
+void WalletView::gotoTrezarMessage()
+{
+#ifdef ENABLE_SMESSAGE
+    setCurrentWidget(trezarMessagePage);
+#endif // ENABLE_SMESSAGE
 }
 
 void WalletView::gotoReceiveCoinsPage()

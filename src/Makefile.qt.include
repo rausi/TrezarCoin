@@ -113,7 +113,9 @@ QT_FORMS_UI = \
   qt/forms/easysplitentry.ui \
   qt/forms/signverifymessagedialog.ui \
   qt/forms/transactiondescdialog.ui \
-  qt/forms/stakingdialog.ui
+  qt/forms/stakingdialog.ui \
+  qt/forms/addcontactdialog.ui \
+  qt/forms/trezarmessage.ui
 
 QT_MOC_CPP = \
   qt/moc_addressbookpage.cpp \
@@ -127,6 +129,7 @@ QT_MOC_CPP = \
   qt/moc_clientmodel.cpp \
   qt/moc_coincontroldialog.cpp \
   qt/moc_coincontroltreewidget.cpp \
+  qt/moc_coldstakingwizard.cpp \
   qt/moc_csvmodelwriter.cpp \
   qt/moc_editaddressdialog.cpp \
   qt/moc_guiutil.cpp \
@@ -162,7 +165,9 @@ QT_MOC_CPP = \
   qt/moc_walletframe.cpp \
   qt/moc_walletmodel.cpp \
   qt/moc_walletview.cpp \
-  qt/moc_stakingdialog.cpp
+  qt/moc_stakingdialog.cpp \
+  qt/moc_addcontactdialog.cpp \
+  qt/moc_trezarmessage.cpp
 
 BITCOIN_MM = \
   qt/macdockiconhandler.mm \
@@ -199,6 +204,7 @@ BITCOIN_QT_H = \
   qt/clientmodel.h \
   qt/coincontroldialog.h \
   qt/coincontroltreewidget.h \
+  qt/coldstakingwizard.h \
   qt/csvmodelwriter.h \
   qt/editaddressdialog.h \
   qt/guiconstants.h \
@@ -241,7 +247,9 @@ BITCOIN_QT_H = \
   qt/walletmodeltransaction.h \
   qt/walletview.h \
   qt/winshutdownmonitor.h \
-  qt/stakingdialog.h
+  qt/stakingdialog.h \
+  qt/addcontactdialog.h \
+  qt/trezarmessage.h
 
 RES_ICONS = \
   qt/res/icons/add.png \
@@ -363,6 +371,7 @@ BITCOIN_QT_WALLET_CPP = \
   qt/askpassphrasedialog.cpp \
   qt/coincontroldialog.cpp \
   qt/coincontroltreewidget.cpp \
+  qt/coldstakingwizard.cpp \
   qt/editaddressdialog.cpp \
   qt/openuridialog.cpp \
   qt/overviewpage.cpp \
@@ -386,7 +395,9 @@ BITCOIN_QT_WALLET_CPP = \
   qt/walletmodel.cpp \
   qt/walletmodeltransaction.cpp \
   qt/walletview.cpp \
-  qt/stakingdialog.cpp
+  qt/stakingdialog.cpp \
+  qt/addcontactdialog.cpp \
+  qt/trezarmessage.cpp
 
 BITCOIN_QT_CPP = $(BITCOIN_QT_BASE_CPP)
 if TARGET_WINDOWS

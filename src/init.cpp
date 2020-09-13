@@ -347,6 +347,9 @@ std::string HelpMessage(HelpMessageMode mode)
     strUsage += HelpMessageOpt("-sysperms", _("Create new files with system default permissions, instead of umask 077 (only effective with disabled wallet functionality)"));
 #endif
     strUsage += HelpMessageOpt("-txindex", strprintf(_("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)"), DEFAULT_TXINDEX));
+#ifdef ENABLE_BITCORE_RPC
+    strUsage += HelpMessageOpt("-addressindex", strprintf("Maintain a full address index (default: %u)", DEFAULT_ADDRINDEX));
+#endif
 
     strUsage += HelpMessageGroup(_("Connection options:"));
     strUsage += HelpMessageOpt("-addnode=<ip>", _("Add a node to connect to and attempt to keep the connection open"));
@@ -863,10 +866,6 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     // ********************************************************* Step 2: parameter interactions
     const CChainParams& chainparams = Params();
 
-#if defined (ASM)
-    nNeoScryptOptions |= 0x1000;
-#endif
-
     // also see: InitParameterInteraction()
 
     // if using block pruning, then disable txindex
@@ -884,7 +883,7 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     nMinerSleep = GetArg("-minersleep", 500);
 
     /* Minimal input time or depth in block chain for stake mining, in hours or confirmations */
-    nStakeMinTime = (unsigned int)GetArg("-stakemintime", 48);
+    nStakeMinTime = (unsigned int)GetArg("-stakemintime", 24);
     nStakeMinDepth = (unsigned int)GetArg("-stakemindepth", 0);
 
     /* Reset time if depth is specified */
@@ -1071,12 +1070,6 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
             }
         }
     }
-	
-	if (mapArgs.count("-checkpointkey")) // ppcoin: checkpoint master priv key
-	{
-		if (!SetCheckpointPrivKey(GetArg("-checkpointkey", "")))
-			return InitError(_("Unable to sign checkpoint, wrong checkpointkey?"));
-	}
 
     /* Inputs below this limit in value don't participate in staking */
     if (mapArgs.count("-stakeminvalue")) {
@@ -1117,6 +1110,12 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     // Sanity check
     if (!InitSanityCheck())
         return InitError(strprintf(_("Initialization sanity check failed. %s is shutting down."), _(PACKAGE_NAME)));
+
+    if (mapArgs.count("-checkpointkey")) // ppcoin: checkpoint master priv key
+    {
+        if (!SetCheckpointPrivKey(GetArg("-checkpointkey", "")))
+            return InitError(_("Unable to sign checkpoint, wrong checkpointkey?"));
+    }
 
     std::string strDataDir = GetDataDir().string();
 
@@ -1352,6 +1351,12 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greater than nMaxDbcache
     int64_t nBlockTreeDBCache = nTotalCache / 8;
     nBlockTreeDBCache = std::min(nBlockTreeDBCache, (GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxBlockDBAndTxIndexCache : nMaxBlockDBCache) << 20);
+#ifdef ENABLE_BITCORE_RPC
+    if (GetBoolArg("-addressindex", DEFAULT_ADDRINDEX)) {
+        // enable 3/4 of the cache if addressindex is enabled
+        nBlockTreeDBCache = nTotalCache * 3 / 4;
+    }
+#endif
     nTotalCache -= nBlockTreeDBCache;
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
@@ -1412,6 +1417,13 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
                     break;
                 }
 
+#ifdef ENABLE_BITCORE_RPC
+                if (fAddressIndex != GetBoolArg("-addressindex", DEFAULT_ADDRINDEX)) {
+                    strLoadError = _("You need to rebuild the database using -reindex-chainstate to change -addressindex");
+                    break;
+                }
+#endif
+
                 // Check for changed -prune state.  What we are concerned about is a user who has pruned blocks
                 // in the past, but is now trying to run unpruned.
                 if (fHavePruned && !fPruneMode) {
@@ -1435,6 +1447,12 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
 
                 {
                     LOCK(cs_main);
+                    uiInterface.InitMessage(_("Checking ACP..."));
+                    if (!CheckCheckpointPubKey()) {
+                        strLoadError = _("Checking ACP pubkey failed");
+                        break;
+                    }
+
                     CBlockIndex* tip = chainActive.Tip();
                     if (tip && tip->nTime > GetAdjustedTime() + 2 * 60 * 60) {
                         strLoadError = _("The block database contains a block which appears to be from the future. "

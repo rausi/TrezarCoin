@@ -31,6 +31,8 @@
 
 using namespace std;
 
+bool EnsureWalletIsAvailable(bool avoidException);
+
 /**
  * Return average network hashes per second based on the last 'lookup' blocks,
  * or from the last difficulty change if 'lookup' is nonpositive.
@@ -207,7 +209,7 @@ UniValue generatetoaddress(const UniValue& params, bool fHelp)
     CBitcoinAddress address(params[1].get_str());
     if (!address.IsValid())
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Error: Invalid address");
-    
+
     boost::shared_ptr<CReserveScript> coinbaseScript(new CReserveScript());
     coinbaseScript->reserveScript = GetScriptForDestination(address.Get());
 
@@ -308,6 +310,148 @@ static UniValue BIP22ValidationResult(const CValidationState& state)
     }
     // Should be impossible
     return "valid?";
+}
+
+
+UniValue getwork(const UniValue& params, bool fHelp)
+{
+    if (!EnsureWalletIsAvailable(fHelp))
+        return NullUniValue;
+
+    if (fHelp || params.size() > 1)
+        throw std::runtime_error(
+            "getwork ( \"data\" )\n"
+            "\nIf 'data' is not specified, it returns the formatted hash data to work on.\n"
+            "If 'data' is specified, tries to solve the block and returns true if it was successful.\n"
+            "\nArguments:\n"
+            "1. \"data\"       (string, optional) The hex encoded data to solve\n"
+            "\nResult (when 'data' is not specified):\n"
+            "{\n"
+            "  \"data\" : \"xxxxx\",      (string) The block data\n"
+            "  \"target\" : \"xxxx\"      (string) The little endian hash target\n"
+            "}\n"
+            "\nResult (when 'data' is specified):\n"
+            "true|false       (boolean) If solving the block specified in the 'data' was successfull\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getwork", "")
+            + HelpExampleRpc("getwork", "")
+        );
+
+    if (vNodes.empty())
+        throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "TrezarCoin is not connected!");
+
+    if (IsInitialBlockDownload())
+        throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "TrezarCoin is downloading blocks...");
+
+    struct BlockData {
+        int nVersion;
+        uint256 hashPrevBlock;
+        uint256 hashMerkleRoot;
+        unsigned int nTime;
+        unsigned int nBits;
+        unsigned int nNonce;
+    };
+
+    static std::map<uint256, std::pair<CBlock*, CScript>> mapNewBlock;
+    static vector<CBlockTemplate*> vNewBlockTemplate;
+    boost::shared_ptr<CReserveScript> coinbaseScript;
+
+    if (params.size() == 0)
+    {
+        // Update block
+        static unsigned int nTransactionsUpdatedLast;
+        static CBlockIndex* pindexPrev;
+        static int64_t nStart;
+        static CBlockTemplate* pblocktemplate;
+
+        if (pindexPrev != chainActive.Tip() ||
+            (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - nStart > 5))
+        {
+            if (pindexPrev != chainActive.Tip())
+            {
+                // Deallocate old blocks since they're obsolete now
+                mapNewBlock.clear();
+
+                for (auto & pblocktemplate : vNewBlockTemplate)
+                    delete pblocktemplate;
+                vNewBlockTemplate.clear();
+            }
+
+            // Clear pindexPrev so future calls make a new block, despite any failures from here on
+            pindexPrev = nullptr;
+
+            // Store the chainActive.Tip() used before CreateNewBlock, to avoid races
+            nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
+            CBlockIndex* pindexPrevNew = chainActive.Tip();
+            nStart = GetTime();
+
+            // Create new block
+            GetMainSignals().ScriptForMining(coinbaseScript);
+            pblocktemplate = BlockAssembler(Params()).CreateNewBlock(coinbaseScript->reserveScript, false, nullptr, false);
+            if (!pblocktemplate)
+                throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
+            vNewBlockTemplate.push_back(pblocktemplate);
+
+            // Need to update only after we know CreateNewBlock succeeded
+            pindexPrev = pindexPrevNew;
+        }
+
+        CBlock* pblock = &pblocktemplate->block; // pointer for convenience
+        const Consensus::Params& consensusParams = Params().GetConsensus();
+
+        // Update nTime
+        UpdateTime(pblock, consensusParams, pindexPrev);
+        pblock->nNonce = 0;
+
+        // Update nExtraNonce
+        static unsigned int nExtraNonce = 0;
+        IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
+
+        // Save
+        pblock->hashMerkleRoot = pblock->BuildMerkleTree();
+        mapNewBlock[pblock->hashMerkleRoot] = std::make_pair(pblock, pblock->vtx[0].vin[0].scriptSig);
+
+        // Pre-build hash buffers
+        unsigned int pdata[32];
+        BlockData data = {pblock->nVersion, pblock->hashPrevBlock, pblock->hashMerkleRoot, pblock->nTime, pblock->nBits, pblock->nNonce};
+        for(unsigned int i = 0; i < 20; ++i)
+            pdata[i] = ((unsigned int *) &data)[i];
+
+        arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
+
+        UniValue result(UniValue::VOBJ);
+        result.push_back(Pair("data",     HexStr(BEGIN(pdata), (char *) &pdata[20])));
+        result.push_back(Pair("target",   HexStr(BEGIN(hashTarget), END(hashTarget))));
+
+        return result;
+    }
+    else
+    {
+        // Parse parameters
+        std::vector<unsigned char> vchData = ParseHex(params[0].get_str());
+
+        if (vchData.size() < 80)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter");
+
+        BlockData block;
+
+        memset(&block, 0, sizeof(block));
+        memcpy(&block, &vchData[0], 80);
+
+        /* Pick up the block contents saved previously */
+        if(!mapNewBlock.count(block.hashMerkleRoot))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't find saved previously block.");
+
+        CBlock* pblock = mapNewBlock[block.hashMerkleRoot].first;
+
+        /* Replace with the data received */
+        pblock->nTime = block.nTime;
+        pblock->nNonce = block.nNonce;
+        pblock->vtx[0].vin[0].scriptSig = mapNewBlock[block.hashMerkleRoot].second;
+        pblock->hashMerkleRoot = pblock->BuildMerkleTree();
+
+        return CheckWork(Params(), pblock);
+    }
 }
 
 std::string gbt_vb_name(const Consensus::DeploymentPos pos) {
@@ -553,7 +697,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
             pblocktemplate = NULL;
         }
         CScript scriptDummy = CScript() << OP_TRUE;
-        pblocktemplate = BlockAssembler(Params()).CreateNewBlock(scriptDummy, fSupportsSegwit);
+        pblocktemplate = BlockAssembler(Params()).CreateNewBlock(scriptDummy, false, NULL, fSupportsSegwit);
         if (!pblocktemplate)
             throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
 
@@ -926,7 +1070,7 @@ UniValue estimatesmartpriority(const UniValue& params, bool fHelp)
 
 UniValue staking(const UniValue& params, bool fHelp)
 {
-    if (fHelp || !(params.size() >= 0 && params.size() <= 1))
+    if (fHelp || params.size() > 1)
         throw runtime_error(
             "staking bool\n"
             "Turns staking on or off\n"
@@ -952,6 +1096,7 @@ static const CRPCCommand commands[] =
     { "mining",             "getmininginfo",          &getmininginfo,          true  },
     { "mining",             "prioritisetransaction",  &prioritisetransaction,  true  },
     { "mining",             "getblocktemplate",       &getblocktemplate,       true  },
+    { "mining",             "getwork",	              &getwork,                true  },
     { "mining",             "submitblock",            &submitblock,            true  },
 
     { "generating",         "staking",                &staking,                true  },

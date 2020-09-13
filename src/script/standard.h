@@ -53,6 +53,7 @@ enum txnouttype
     TX_NULL_DATA,
     TX_WITNESS_V0_SCRIPTHASH,
     TX_WITNESS_V0_KEYHASH,
+    TX_COLDSTAKING
 };
 
 class CNoDestination {
@@ -68,7 +69,7 @@ public:
  *  * CScriptID: TX_SCRIPTHASH destination
  *  A CTxDestination is the internal data type encoded in a CBitcoinAddress
  */
-typedef boost::variant<CNoDestination, CKeyID, CScriptID> CTxDestination;
+typedef boost::variant<CNoDestination, CKeyID, CScriptID, std::pair<CKeyID, CKeyID>> CTxDestination;
 
 const char* GetTxnOutputType(txnouttype t);
 
@@ -80,5 +81,14 @@ CScript GetScriptForDestination(const CTxDestination& dest);
 CScript GetScriptForRawPubKey(const CPubKey& pubkey);
 CScript GetScriptForMultisig(int nRequired, const std::vector<CPubKey>& keys);
 CScript GetScriptForWitness(const CScript& redeemscript);
+
+#ifdef ENABLE_BITCORE_RPC
+struct DataVisitor : public boost::static_visitor<valtype>
+{
+    valtype operator()(const CNoDestination& noDest) const;
+    valtype operator()(const CKeyID& keyID) const;
+    valtype operator()(const CScriptID& scriptID) const;
+};
+#endif
 
 #endif // BITCOIN_SCRIPT_STANDARD_H
